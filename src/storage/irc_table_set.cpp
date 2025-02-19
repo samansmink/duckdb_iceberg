@@ -46,7 +46,7 @@ void ICTableSet::FillEntry(ClientContext &context, unique_ptr<CatalogEntry> &ent
 	}
 		
 	auto &ic_catalog = catalog.Cast<IRCatalog>();
-	auto table = IRCAPI::GetTable(catalog.GetName(), catalog.GetDBPath(), schema.name, entry->name, ic_catalog.credentials);
+	auto table = IRCAPI::GetTable(context, catalog.GetName(), catalog.GetDBPath(), schema.name, entry->name, ic_catalog.credentials);
 	entry = _CreateCatalogEntry(context, table);
 }
 
@@ -57,7 +57,7 @@ void ICTableSet::LoadEntries(ClientContext &context) {
 
 	auto &ic_catalog = catalog.Cast<IRCatalog>();
 	// TODO: handle out-of-order columns using position property
-	auto tables = IRCAPI::GetTables(catalog.GetName(), catalog.GetDBPath(), schema.name, ic_catalog.credentials);
+	auto tables = IRCAPI::GetTables(context, catalog.GetName(), catalog.GetDBPath(), schema.name, ic_catalog.credentials);
 
 	for (auto &table : tables) {
 		auto entry = _CreateCatalogEntry(context, table);
@@ -81,14 +81,14 @@ unique_ptr<ICTableInfo> ICTableSet::GetTableInfo(ClientContext &context, IRCSche
 optional_ptr<CatalogEntry> ICTableSet::CreateTable(ClientContext &context, BoundCreateTableInfo &info) {
 	auto &ic_catalog = catalog.Cast<IRCatalog>();
 	auto *table_info = dynamic_cast<CreateTableInfo *>(info.base.get());
-	auto table = IRCAPI::CreateTable(catalog.GetName(), ic_catalog.internal_name, schema.name, ic_catalog.credentials, table_info);
+	auto table = IRCAPI::CreateTable(context, catalog.GetName(), ic_catalog.internal_name, schema.name, ic_catalog.credentials, table_info);
 	auto entry = _CreateCatalogEntry(context, table);
 	return CreateEntry(std::move(entry));
 }
 
 void ICTableSet::DropTable(ClientContext &context, DropInfo &info) {
 	auto &ic_catalog = catalog.Cast<IRCatalog>();
-	IRCAPI::DropTable(catalog.GetName(), ic_catalog.internal_name, schema.name, info.name, ic_catalog.credentials);	
+	IRCAPI::DropTable(context, catalog.GetName(), ic_catalog.internal_name, schema.name, info.name, ic_catalog.credentials);
 }
 
 void ICTableSet::AlterTable(ClientContext &context, RenameTableInfo &info) {

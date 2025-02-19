@@ -14,7 +14,8 @@
 #include <aws/core/auth/AWSCredentialsProviderChain.h>
 #include <aws/core/http/curl/CurlHttpClient.h>
 #include <aws/core/http/HttpRequest.h>
-
+#include <duckdb/main/secret/secret.hpp>
+#include <duckdb/main/secret/secret_manager.hpp>
 
 using namespace duckdb_yyjson;
 namespace duckdb {
@@ -140,15 +141,34 @@ static string DeleteRequest(const string &url, const string &token = "", curl_sl
     throw InternalException("Failed to initialize curl");
 }
 
-static string GetRequestAws(const string &url) {
-	const Aws::Client::ClientConfiguration clientConfig;
+class DuckDBSecretCredentialProvider : public Aws::Auth::AWSCredentialsProviderChain
+{
+public:
+	DuckDBSecretCredentialProvider(const string& key_id, const string &secret, const string &sesh_token) {
+		credentials.SetAWSAccessKeyId(key_id);
+		credentials.SetAWSSecretKey(secret);
+		credentials.SetSessionToken(sesh_token);
+	}
 
-	auto curl_client = make_uniq<Aws::Http::CurlHttpClient>(clientConfig);
+	~DuckDBSecretCredentialProvider() = default;
+
+	Aws::Auth::AWSCredentials GetAWSCredentials() override {
+		return credentials;
+	};
+
+protected:
+	Aws::Auth::AWSCredentials credentials;
+};
+
+static string GetRequestAws(const string &url, ClientContext &context) {
+	auto clientConfig = make_uniq<Aws::Client::ClientConfiguration>();
+
+	auto curl_client = make_uniq<Aws::Http::CurlHttpClient>(*clientConfig);
 
 	std::shared_ptr<Aws::Http::HttpClientFactory> MyClientFactory;
 	std::shared_ptr<Aws::Http::HttpClient> MyHttpClient;
 
-	MyHttpClient = Aws::Http::CreateHttpClient(clientConfig);
+	MyHttpClient = Aws::Http::CreateHttpClient(*clientConfig);
 	const Aws::String uri(url);
 
 	std::shared_ptr<Aws::Http::HttpRequest> req(
@@ -156,7 +176,21 @@ static string GetRequestAws(const string &url) {
 									 Aws::Http::HttpMethod::HTTP_GET,
 									 Aws::Utils::Stream::DefaultResponseStreamFactoryMethod));
 
-	auto provider = std::make_shared<Aws::Auth::DefaultAWSCredentialsProviderChain>();
+	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
+	auto secret_match = context.db->GetSecretManager().LookupSecret(transaction, "s3://", "s3");
+
+	std::shared_ptr<Aws::Auth::AWSCredentialsProviderChain> provider;
+	if (secret_match.HasMatch()) {
+		auto kv_secret = dynamic_cast<const KeyValueSecret &>(secret_match.GetSecret());
+		provider = std::make_shared<DuckDBSecretCredentialProvider>(
+				kv_secret.secret_map["key_id"].GetValue<string>(),
+				kv_secret.secret_map["secret"].GetValue<string>(),
+				kv_secret.secret_map["session_token"].GetValue<string>()
+			);
+	} else {
+		provider = std::make_shared<Aws::Auth::DefaultAWSCredentialsProviderChain>();
+	}
+
 	auto signer = make_uniq<Aws::Client::AWSAuthV4Signer>(provider, "glue", "us-east-1");
 	signer->SignRequest(*req);
 
@@ -171,9 +205,9 @@ static string GetRequestAws(const string &url) {
 	}
 }
 
-static string GetRequest(const string &url, const string &token = "", curl_slist *extra_headers = NULL) {
+static string GetRequest(ClientContext &context, const string &url, const string &token = "", curl_slist *extra_headers = NULL) {
 	if (StringUtil::StartsWith(url, "https://glue." )) {
-		auto str = GetRequestAws(url);
+		auto str = GetRequestAws(url, context);
 		return str;
 	}
 	CURL *curl;
@@ -264,10 +298,11 @@ static yyjson_doc *api_result_to_doc(const string &api_result) {
 	return doc;
 }
 
-static string GetTableMetadata(const string &internal, const string &schema, const string &table, IRCCredentials credentials) {
+static string GetTableMetadata(ClientContext &context,const string &internal, const string &schema, const string &table, IRCCredentials credentials) {
 	struct curl_slist *extra_headers = NULL;
 	extra_headers = curl_slist_append(extra_headers, "X-Iceberg-Access-Delegation: vended-credentials");
 	string api_result = GetRequest(
+		context,
 		credentials.endpoint + IRCAPI::GetOptionallyPrefixedURL(IRCAPI::API_VERSION_1, internal) + "namespaces/" + schema + "/tables/" + table,
 		credentials.token,
 		extra_headers);
@@ -279,7 +314,7 @@ void IRCAPI::InitializeCurl() {
 	SelectCurlCertPath();
 }
 
-vector<string> IRCAPI::GetCatalogs(const string &catalog, IRCCredentials credentials) {
+vector<string> IRCAPI::GetCatalogs(ClientContext &context, const string &catalog, IRCCredentials credentials) {
 	throw NotImplementedException("ICAPI::GetCatalogs");
 }
 
@@ -293,9 +328,9 @@ static IRCAPIColumnDefinition ParseColumnDefinition(yyjson_val *column_def) {
 	return result;
 }
 
-IRCAPITableCredentials IRCAPI::GetTableCredentials(const string &internal, const string &schema, const string &table, IRCCredentials credentials) {
+IRCAPITableCredentials IRCAPI::GetTableCredentials(ClientContext &context, const string &internal, const string &schema, const string &table, IRCCredentials credentials) {
 	IRCAPITableCredentials result;
-	string api_result = GetTableMetadata(internal, schema, table, credentials);
+	string api_result = GetTableMetadata(context, internal, schema, table, credentials);
 	std::unique_ptr<yyjson_doc, YyjsonDocDeleter> doc(api_result_to_doc(api_result));
 	auto *root = yyjson_doc_get_root(doc.get());
 	auto *aws_temp_credentials = yyjson_obj_get(root, "config");
@@ -308,7 +343,7 @@ IRCAPITableCredentials IRCAPI::GetTableCredentials(const string &internal, const
   return result;
 }
 
-string IRCAPI::GetToken(string id, string secret, string endpoint) {
+string IRCAPI::GetToken(ClientContext &context, string id, string secret, string endpoint) {
 	return "";
 	string post_data = "grant_type=client_credentials&client_id=" + id + "&client_secret=" + secret + "&scope=PRINCIPAL_ROLE:ALL";
 	string api_result = PostRequest(endpoint + "/v1/oauth/tokens", post_data);
@@ -357,12 +392,12 @@ static IRCAPITable createTable(const string &catalog, const string &schema, cons
 	return table_result;
 }
 
-IRCAPITable IRCAPI::GetTable(
+IRCAPITable IRCAPI::GetTable(ClientContext &context,
 	const string &catalog, const string &internal, const string &schema, const string &table_name, optional_ptr<IRCCredentials> credentials) {
 	
 	IRCAPITable table_result = createTable(catalog, schema, table_name);
 	if (credentials) {
-		string result = GetTableMetadata(internal, schema, table_result.name, *credentials);
+		string result = GetTableMetadata(context, internal, schema, table_result.name, *credentials);
 		std::unique_ptr<yyjson_doc, YyjsonDocDeleter> doc(api_result_to_doc(result));
 		auto *metadata_root = yyjson_doc_get_root(doc.get());
 		populateTableMetadata(table_result, metadata_root);
@@ -390,26 +425,26 @@ string IRCAPI::GetOptionallyPrefixedURL(const string &api_version, const string 
 }
 
 // TODO: handle out-of-order columns using position property
-vector<IRCAPITable> IRCAPI::GetTables(const string &catalog, const string &internal, const string &schema, IRCCredentials credentials) {
+vector<IRCAPITable> IRCAPI::GetTables(ClientContext &context, const string &catalog, const string &internal, const string &schema, IRCCredentials credentials) {
 	vector<IRCAPITable> result;
-	string api_result = GetRequest(credentials.endpoint + GetOptionallyPrefixedURL(IRCAPI::API_VERSION_1, internal) + "namespaces/" + schema + "/tables", credentials.token);
+	string api_result = GetRequest(context, credentials.endpoint + GetOptionallyPrefixedURL(IRCAPI::API_VERSION_1, internal) + "namespaces/" + schema + "/tables", credentials.token);
 	std::unique_ptr<yyjson_doc, YyjsonDocDeleter> doc(api_result_to_doc(api_result));
 	auto *root = yyjson_doc_get_root(doc.get());
 	auto *tables = yyjson_obj_get(root, "identifiers");
 	size_t idx, max;
 	yyjson_val *table;
 	yyjson_arr_foreach(tables, idx, max, table) {
-		auto table_result = GetTable(catalog, internal, schema, TryGetStrFromObject(table, "name"), nullptr);
+		auto table_result = GetTable(context, catalog, internal, schema, TryGetStrFromObject(table, "name"), nullptr);
 		result.push_back(table_result);
 	}
 
 	return result;
 }
 
-vector<IRCAPISchema> IRCAPI::GetSchemas(const string &catalog, const string &internal, IRCCredentials credentials) {
+vector<IRCAPISchema> IRCAPI::GetSchemas(ClientContext &context, const string &catalog, const string &internal, IRCCredentials credentials) {
 	vector<IRCAPISchema> result;
 	string api_result =
-	    GetRequest(credentials.endpoint + GetOptionallyPrefixedURL(IRCAPI::API_VERSION_1, internal) + "namespaces", credentials.token);
+	    GetRequest(context, credentials.endpoint + GetOptionallyPrefixedURL(IRCAPI::API_VERSION_1, internal) + "namespaces", credentials.token);
 	std::unique_ptr<yyjson_doc, YyjsonDocDeleter> doc(api_result_to_doc(api_result));
 	auto *root = yyjson_doc_get_root(doc.get());
 	auto *schemas = yyjson_obj_get(root, "namespaces");
@@ -426,15 +461,15 @@ vector<IRCAPISchema> IRCAPI::GetSchemas(const string &catalog, const string &int
 	return result;
 }
 
-IRCAPISchema IRCAPI::CreateSchema(const string &catalog, const string &internal, const string &schema, IRCCredentials credentials) {
+IRCAPISchema IRCAPI::CreateSchema(ClientContext &context, const string &catalog, const string &internal, const string &schema, IRCCredentials credentials) {
 	throw NotImplementedException("IRCAPI::Create Schema not Implemented");
 }
 
-void IRCAPI::DropSchema(const string &internal, const string &schema, IRCCredentials credentials) {
+void IRCAPI::DropSchema(ClientContext &context, const string &internal, const string &schema, IRCCredentials credentials) {
 	throw NotImplementedException("IRCAPI Drop Schema not Implemented");
 }
 
-void IRCAPI::DropTable(const string &catalog, const string &internal, const string &schema, string &table_name, IRCCredentials credentials) {
+void IRCAPI::DropTable(ClientContext &context, const string &catalog, const string &internal, const string &schema, string &table_name, IRCCredentials credentials) {
 	throw NotImplementedException("IRCAPI Drop Table not Implemented");
 }
 
@@ -445,7 +480,7 @@ static std::string json_to_string(yyjson_mut_doc *doc, yyjson_write_flag flags =
     return json_str;
 }
 
-IRCAPITable IRCAPI::CreateTable(const string &catalog, const string &internal, const string &schema, IRCCredentials credentials, CreateTableInfo *table_info) {
+IRCAPITable IRCAPI::CreateTable(ClientContext &context, const string &catalog, const string &internal, const string &schema, IRCCredentials credentials, CreateTableInfo *table_info) {
 	throw NotImplementedException("IRCAPI Create Table not Implemented");
 }
 

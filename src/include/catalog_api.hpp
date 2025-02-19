@@ -49,17 +49,17 @@ public:
 	// The {prefix} for a catalog is always optional according to the iceberg spec. So no need to
 	// add it if it is not defined.
 	static string GetOptionallyPrefixedURL(const string &api_version, const string &prefix);
-	static IRCAPITableCredentials GetTableCredentials(const string &internal, const string &schema, const string &table, IRCCredentials credentials);
-	static vector<string> GetCatalogs(const string &catalog, IRCCredentials credentials);
-	static vector<IRCAPITable> GetTables(const string &catalog, const string &internal, const string &schema, IRCCredentials credentials);
-	static IRCAPITable GetTable(const string &catalog, const string &internal, const string &schema, const string &table_name, optional_ptr<IRCCredentials> credentials);
-	static vector<IRCAPISchema> GetSchemas(const string &catalog, const string &internal, IRCCredentials credentials);
-	static vector<IRCAPITable> GetTablesInSchema(const string &catalog, const string &schema, IRCCredentials credentials);
-	static string GetToken(string id, string secret, string endpoint);
-	static IRCAPISchema CreateSchema(const string &catalog, const string &internal, const string &schema, IRCCredentials credentials);
-	static void DropSchema(const string &internal, const string &schema, IRCCredentials credentials);
-	static IRCAPITable CreateTable(const string &catalog, const string &internal, const string &schema, IRCCredentials credentials, CreateTableInfo *table_info);
-	static void DropTable(const string &catalog, const string &internal, const string &schema, string &table_name, IRCCredentials credentials);
+	static IRCAPITableCredentials GetTableCredentials(ClientContext &context,const string &internal, const string &schema, const string &table, IRCCredentials credentials);
+	static vector<string> GetCatalogs(ClientContext &context, const string &catalog, IRCCredentials credentials);
+	static vector<IRCAPITable> GetTables(ClientContext &context, const string &catalog, const string &internal, const string &schema, IRCCredentials credentials);
+	static IRCAPITable GetTable(ClientContext &context, const string &catalog, const string &internal, const string &schema, const string &table_name, optional_ptr<IRCCredentials> credentials);
+	static vector<IRCAPISchema> GetSchemas(ClientContext &context, const string &catalog, const string &internal, IRCCredentials credentials);
+	static vector<IRCAPITable> GetTablesInSchema(ClientContext &context, const string &catalog, const string &schema, IRCCredentials credentials);
+	static string GetToken(ClientContext &context, string id, string secret, string endpoint);
+	static IRCAPISchema CreateSchema(ClientContext &context, const string &catalog, const string &internal, const string &schema, IRCCredentials credentials);
+	static void DropSchema(ClientContext &context, const string &internal, const string &schema, IRCCredentials credentials);
+	static IRCAPITable CreateTable(ClientContext &context, const string &catalog, const string &internal, const string &schema, IRCCredentials credentials, CreateTableInfo *table_info);
+	static void DropTable(ClientContext &context, const string &catalog, const string &internal, const string &schema, string &table_name, IRCCredentials credentials);
 };
 
 } // namespace duckdb

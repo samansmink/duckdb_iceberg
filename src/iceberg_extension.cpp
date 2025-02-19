@@ -25,7 +25,7 @@
 
 namespace duckdb {
 
-static unique_ptr<BaseSecret> CreateCatalogSecretFunction(ClientContext &, CreateSecretInput &input) {
+static unique_ptr<BaseSecret> CreateCatalogSecretFunction(ClientContext &context, CreateSecretInput &input) {
 	// apply any overridden settings
 	vector<string> prefix_paths;
 	auto result = make_uniq<KeyValueSecret>(prefix_paths, "iceberg", "config", input.name);
@@ -45,6 +45,7 @@ static unique_ptr<BaseSecret> CreateCatalogSecretFunction(ClientContext &, Creat
 
 	// Get token from catalog
 	result->secret_map["token"] = IRCAPI::GetToken(
+		context,
 		result->secret_map["client_id"].ToString(), 
 		result->secret_map["client_secret"].ToString(),
 		result->secret_map["endpoint"].ToString());
@@ -84,18 +85,58 @@ static unique_ptr<Catalog> IcebergCatalogAttach(StorageExtensionInfo *storage_in
                                            AccessMode access_mode) {
 	IRCCredentials credentials;
 
+	string account_id;
+	string catalog;
+
 	// check if we have a secret provided
 	string secret_name;
 	for (auto &entry : info.options) {
 		auto lower_name = StringUtil::Lower(entry.first);
 		if (lower_name == "type" || lower_name == "read_only") {
 			// already handled
-		} else if (lower_name == "secret") {
+		} else if (lower_name == "credentials") {
 			secret_name = entry.second.ToString();
+		} else if (lower_name == "account_id") {
+			account_id = entry.second.ToString();
+		} else if (lower_name == "catalog") {
+			catalog = StringUtil::Lower(entry.second.ToString());
 		} else {
 			throw BinderException("Unrecognized option for PC attach: %s", entry.first);
 		}
 	}
+
+	if (catalog == "s3_tables_glue") {
+		// if no iceberg secret is specified we default to the unnamed mysql secret, if it
+		// exists
+		bool explicit_secret = !secret_name.empty();
+		if (explicit_secret) {
+			// Lookup explicit secret
+			auto secret_entry = GetSecret(context, secret_name);
+			if (secret_entry) {
+				const auto &kv_secret = dynamic_cast<const KeyValueSecret &>(*secret_entry->secret);
+				credentials.aws_region = kv_secret.TryGetValue("region").ToString();
+				credentials.endpoint = "https://glue." + credentials.aws_region +  ".amazonaws.com/iceberg/v1";
+			} else {
+				throw BinderException("Secret with name \"%s\" not found", secret_name);
+			}
+		} else {
+			// look up any s3 secret
+			auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
+			auto secret_match = context.db->GetSecretManager().LookupSecret(transaction, "s3://", "s3");
+			if (!secret_match.HasMatch()) {
+				throw IOException("Failed to find a secret and no explicit secret was passed!");
+			}
+			auto kv_secret = dynamic_cast<const KeyValueSecret &>(secret_match.GetSecret());
+			credentials.aws_region = kv_secret.TryGetValue("region").ToString();
+			credentials.endpoint = "https://glue." + credentials.aws_region +  ".amazonaws.com/iceberg/v1";
+		}
+
+		string path = "/catalogs/" + account_id + ":s3tablescatalog:" + info.path + "/";
+
+		return make_uniq<IRCatalog>(db, path, access_mode, credentials);
+	}
+
+	// Default IRC path
 
 	// if no iceberg secret is specified we default to the unnamed mysql secret, if it
 	// exists

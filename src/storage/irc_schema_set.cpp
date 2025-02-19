@@ -17,7 +17,7 @@ void IRCSchemaSet::LoadEntries(ClientContext &context) {
 	}
 
 	auto &ic_catalog = catalog.Cast<IRCatalog>();
-	auto schemas = IRCAPI::GetSchemas(catalog.GetName(), ic_catalog.internal_name, ic_catalog.credentials);
+	auto schemas = IRCAPI::GetSchemas(context, catalog.GetName(), ic_catalog.internal_name, ic_catalog.credentials);
 	for (const auto &schema : schemas) {
 		CreateSchemaInfo info;
 		info.schema = schema.schema_name;
@@ -34,7 +34,7 @@ void IRCSchemaSet::FillEntry(ClientContext &context, unique_ptr<CatalogEntry> &e
 
 optional_ptr<CatalogEntry> IRCSchemaSet::CreateSchema(ClientContext &context, CreateSchemaInfo &info) {
 	auto &ic_catalog = catalog.Cast<IRCatalog>();
-	auto schema = IRCAPI::CreateSchema(catalog.GetName(), ic_catalog.internal_name, info.schema, ic_catalog.credentials);
+	auto schema = IRCAPI::CreateSchema(context, catalog.GetName(), ic_catalog.internal_name, info.schema, ic_catalog.credentials);
 	auto schema_entry = make_uniq<IRCSchemaEntry>(catalog, info);
 	schema_entry->schema_data = make_uniq<IRCAPISchema>(schema);
 	return CreateEntry(std::move(schema_entry));
@@ -42,7 +42,7 @@ optional_ptr<CatalogEntry> IRCSchemaSet::CreateSchema(ClientContext &context, Cr
 
 void IRCSchemaSet::DropSchema(ClientContext &context, DropInfo &info) {
 	auto &ic_catalog = catalog.Cast<IRCatalog>();
-	IRCAPI::DropSchema(ic_catalog.internal_name, info.name, ic_catalog.credentials);
+	IRCAPI::DropSchema(context, ic_catalog.internal_name, info.name, ic_catalog.credentials);
 	DropEntry(context, info);
 }
 
